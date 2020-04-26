@@ -7,11 +7,12 @@
     using Events;
 
 
-    public abstract class RoutingSlipResponseProxy<TRequest, TResponse> :
+    public abstract class RoutingSlipResponseProxy<TRequest, TResponse, TFaultedResponse> :
         IConsumer<RoutingSlipCompleted>,
         IConsumer<RoutingSlipFaulted>
         where TRequest : class
         where TResponse : class
+        where TFaultedResponse : class
     {
         public async Task Consume(ConsumeContext<RoutingSlipCompleted> context)
         {
@@ -29,7 +30,7 @@
 
             var endpoint = await context.GetSendEndpoint(responseAddress).ConfigureAwait(false);
 
-            var response = CreateResponseMessage(context, request);
+            var response = await CreateResponseMessage(context, request);
 
             await endpoint.Send(response, x => x.RequestId = requestId)
                 .ConfigureAwait(false);
@@ -51,14 +52,28 @@
 
             var endpoint = await context.GetSendEndpoint(responseAddress).ConfigureAwait(false);
 
-            ActivityException[] exceptions = context.Message.ActivityExceptions;
+            var response = await CreateFaultedResponseMessage(context, request, requestId);
 
-            await endpoint.Send<Fault<TRequest>>(
-                    new FaultEvent<TRequest>(request, requestId, context.Host, exceptions.Select(x => x.ExceptionInfo),
-                        context.SupportedMessageTypes.ToArray()), x => x.RequestId = requestId)
+            await endpoint.Send(response, x => x.RequestId = requestId)
                 .ConfigureAwait(false);
         }
 
-        protected abstract TResponse CreateResponseMessage(ConsumeContext<RoutingSlipCompleted> context, TRequest request);
+        protected abstract Task<TResponse> CreateResponseMessage(ConsumeContext<RoutingSlipCompleted> context, TRequest request);
+
+        protected abstract Task<TFaultedResponse> CreateFaultedResponseMessage(ConsumeContext<RoutingSlipFaulted> context, TRequest request, Guid requestId);
+    }
+
+    public abstract class RoutingSlipResponseProxy<TRequest, TResponse> :
+        RoutingSlipResponseProxy<TRequest, TResponse, FaultEvent<TRequest>>
+        where TRequest : class
+        where TResponse : class
+    {
+        protected override Task<FaultEvent<TRequest>> CreateFaultedResponseMessage(ConsumeContext<RoutingSlipFaulted> context, TRequest request, Guid requestId)
+        {
+            ActivityException[] exceptions = context.Message.ActivityExceptions;
+
+            var response = new FaultEvent<TRequest>(request, requestId, context.Host, exceptions.Select(x => x.ExceptionInfo), context.SupportedMessageTypes.ToArray());
+            return Task.FromResult(response);
+        }
     }
 }
